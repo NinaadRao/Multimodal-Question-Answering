@@ -25,10 +25,6 @@ obj = s3.get_object(Bucket=bucket_name, Key=key)
 file_content = json.loads(obj['Body'].read().decode('utf-8'))
 
 
-for i, t in enumerate(generated_text):
-    print(f"{i}:\n{t}\n")
-
-
 obj = s3.get_object(Bucket=bucket_name, Key=key)
 file_content = json.loads(obj['Body'].read().decode('utf-8'))
 
