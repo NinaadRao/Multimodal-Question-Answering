@@ -24,10 +24,6 @@ key = ""
 obj = s3.get_object(Bucket=bucket_name, Key=key)
 file_content = json.loads(obj['Body'].read().decode('utf-8'))
 
-
-obj = s3.get_object(Bucket=bucket_name, Key=key)
-file_content = json.loads(obj['Body'].read().decode('utf-8'))
-
 def generate_output_answer(prompts):
     
     inputs = processor(prompts, add_end_of_utterance_token=False, return_tensors="pt").to(device)
@@ -76,6 +72,7 @@ output_dict = {'question': [],
 base_url = "/workspace/CLEVR-dataset/images/"
 
 prompts = []
+ground_truth_answers = []
 for item in file_content['questions']:
     total_questions += 1
 
@@ -84,6 +81,7 @@ for item in file_content['questions']:
     img_split = item['split']
     image_object_url = base_url + img_split + '/' + img_filename
     ground_truth_answer = item['answer']
+    ground_truth_answers.append(ground_truth_answer)
 
     img = Image.open(image_object_url)
 
@@ -105,12 +103,12 @@ for item in file_content['questions']:
 
         predicted_answer = generate_output_answer(prompts)
 
-        for ans in predicted_answer:
+        for ans, ground_truth in zip(predicted_answer, ground_truth_answers):
             # print(ans)
             ans = ans.split("Assistant: ")[1]
             output_dict['predicted_ans'].append(ans)
 
-            if evaluate_result(ans, ground_truth_answer):
+            if evaluate_result(ans, ground_truth):
                 total_correct += 1
                 output_dict['correct'].append(1)
             else:
@@ -119,3 +117,6 @@ for item in file_content['questions']:
         print(f"Completed {total_questions}")
 
         prompts = []
+
+
+### separately process the last batch
