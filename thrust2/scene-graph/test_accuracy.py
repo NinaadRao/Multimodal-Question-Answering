@@ -68,7 +68,7 @@ def parse_answer(raw_outputs):
             ans = ' '.join(ans)
             answers[k].append(ans)
 
-    with open('Experiments/Exp2/answers.json', 'w+') as f:
+    with open('Experiments/Exp3/answers.json', 'w+') as f:
         json.dump(answers, f)
     
     return answers
@@ -80,7 +80,7 @@ def compute_accuracy(answers, qid, only_balanced=False, create_file=None):
     with open(qid,'r') as f:    
         qid = json.load(f)
 
-    with open('Dataset/GQA/questions/testdev_all_questions.json','r') as f:
+    with open('Dataset/GQA/questions/val_sample_questions.json','r') as f:
         qdata = json.load(f)
 
     count_correct = 0
@@ -133,11 +133,14 @@ def compute_accuracy(answers, qid, only_balanced=False, create_file=None):
         df.to_csv(os.path.join(create_file,'err_analysis.csv'), index=False)
 
 if __name__=='__main__':
-    assert sanity_check('Experiments/Exp2/raw_outputs.json', 'Experiments/Exp2/prompts_batched.json')
+    enum = 3
+    # assert sanity_check('Experiments/Exp2/raw_outputs.json', 'Experiments/Exp2/prompts_batched.json')
+    assert sanity_check(f'Experiments/Exp{enum}/raw_outputs.json', f'Experiments/Exp{enum}/prompts_batched.json')
 
     # nltk.download('stopwords')
     # nltk.download('punkt')
     # nltk.download('wordnet')
-    # answers = parse_answer('Experiments/Exp2/raw_outputs.json')
+    answers = parse_answer(f'Experiments/Exp{enum}/raw_outputs.json')
 
-    compute_accuracy('Experiments/Exp2/answers.json', 'Experiments/Exp2/qid_batched.json', create_file='Experiments/Exp2/')
+    # compute_accuracy('Experiments/Exp2/answers.json', 'Experiments/Exp2/qid_batched.json', create_file='Experiments/Exp2/')
+    compute_accuracy(f'Experiments/Exp{enum}/answers.json', f'Experiments/Exp{enum}/qid_batched.json', create_file=f'Experiments/Exp{enum}/')
