@@ -59,22 +59,67 @@ def main(args):
     questions_list = json.load(questions_file)['questions']
     questions_file.close()
     file_dump = {'question' : [], 'image_filename' : [], 'ground_truth_ans' : [], 'question_type' : [],'predicted_ans' : [], 'correct': [], 'question_family_index': []}
+    pd.DataFrame(file_dump).to_csv('outputs-eval.csv', index = False)
 
 
 
     # while True:
+    prompts = []
+    batch_size = 16
     print(len(questions_list))
     for i, question in enumerate(questions_list):
-        conv = conv_templates[args.conv_mode].copy()
+        if (i + 1) % batch_size == 0:
+            
+            input_ids, attention_mask = tokenizer_image_token(prompts, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt')
+            input_ids = input_ids.cuda()
+            # stop_str = conv.sep if conv.sep_style != SeparatorStyle.TWO else conv.sep2
+            # keywords = [stop_str]
+            print(input_ids[:1, ].size())
+            # stopping_criteria = KeywordsStoppingCriteria(keywords, tokenizer, input_ids[:1, ])
+            # streamer = TextStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
 
+            with torch.inference_mode():
+                output_ids = model.generate(
+                    input_ids,
+                    images=image_tensor,
+                    do_sample=True,
+                    temperature=0.2,
+                    max_new_tokens=1024,
+                    # streamer=streamer,
+                    use_cache=True,
+                    # stopping_criteria=[stopping_criteria], 
+                    attention_mask = attention_mask)
+            print(output_ids.size())
+            outputs = tokenizer.batch_decode(output_ids[:, input_ids.shape[1]:])
+            print(outputs)
+            # file_dump['question'].append(question['question'])
+            # file_dump['image_filename'].append(question['image_filename'])
+            # file_dump['ground_truth_ans'].append(question['answer'])
+            # file_dump['question_type'].append(','.join(i['function'] for i in question['program']))
+            # file_dump['predicted_ans'].append(outputs)
+            # file_dump['correct'].append(1)
+            # file_dump['question_family_index'].append(question['question_family_index'])
+            if args.debug:
+                print("\n", {"prompt": prompt, "outputs": outputs}, "\n")
+
+            prompts = []
+            image_tensor = image_processor.preprocess(image, return_tensors='pt')['pixel_values'].half().cuda()
+            df = pd.read_csv('outputs-eval.csv')
+            pd.concat([df, pd.DataFrame(file_dump)])
+
+            
+        conv = conv_templates[args.conv_mode].copy()
+        
         im_file = question['image_filename']
         print(i + 1, im_file)
 
         inp = question['question']
         image = load_image(im_path + im_file)
-        image_tensor = image_processor.preprocess(image, return_tensors='pt')['pixel_values'].half().cuda()
+        if (i + 1) % batch_size:
+            image_tensor = torch.cat((image_tensor, image_processor.preprocess(image, return_tensors='pt')['pixel_values'].half().cuda()), 0)
 
-
+        print(image_tensor.size())
+        
         if image is not None:
             # first message
             if model.config.mm_use_im_start_end:
@@ -88,34 +133,9 @@ def main(args):
         #     conv.append_message(conv.roles[0], inp)
         conv.append_message(conv.roles[1], None)
         prompt = conv.get_prompt()
-
-        input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).cuda()
-        stop_str = conv.sep if conv.sep_style != SeparatorStyle.TWO else conv.sep2
-        keywords = [stop_str]
-        stopping_criteria = KeywordsStoppingCriteria(keywords, tokenizer, input_ids)
-        # streamer = TextStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
-
-        with torch.inference_mode():
-            output_ids = model.generate(
-                input_ids,
-                images=image_tensor,
-                do_sample=True,
-                temperature=0.2,
-                max_new_tokens=1024,
-                # streamer=streamer,
-                use_cache=True,
-                stopping_criteria=[stopping_criteria])
-
-        outputs = tokenizer.decode(output_ids[0, input_ids.shape[1]:]).strip()
-        file_dump['question'].append(question['question'])
-        file_dump['image_filename'].append(question['image_filename'])
-        file_dump['ground_truth_ans'].append(question['answer'])
-        file_dump['question_type'].append(','.join(i['function'] for i in question['program']))
-        file_dump['predicted_ans'].append(outputs)
-        file_dump['correct'].append(1)
-        file_dump['question_family_index'].append(question['question_family_index'])
-        if args.debug:
-            print("\n", {"prompt": prompt, "outputs": outputs}, "\n")
+        prompts.append(prompt)
+        
+        
     pd.DataFrame(file_dump).to_csv('outputs-eval.csv', index = False)
 
 if __name__ == "__main__":
