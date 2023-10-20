@@ -117,6 +117,24 @@ for item in file_content['questions']:
         print(f"Completed {total_questions}")
 
         prompts = []
+        
+predicted_answer = generate_output_answer(prompts)
 
+for ans, ground_truth in zip(predicted_answer, ground_truth_answers):
+    # print(ans)
+    ans = ans.split("Assistant: ")[1]
+    output_dict['predicted_ans'].append(ans)
+    # print(ans)
+
+    if evaluate_result(str(ans), str(ground_truth)):
+        total_correct += 1
+        output_dict['correct'].append(1)
+    else:
+        output_dict['correct'].append(0)
+
+print(f"Completed {total_questions}")
+
+df = pd.DataFrame(output_dict)
+df.to_csv("output.csv", index = False)
 
 ### separately process the last batch
