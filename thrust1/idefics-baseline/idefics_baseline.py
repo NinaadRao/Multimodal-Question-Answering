@@ -108,7 +108,7 @@ for item in file_content['questions']:
             ans = ans.split("Assistant: ")[1]
             output_dict['predicted_ans'].append(ans)
 
-            if evaluate_result(ans, ground_truth):
+            if evaluate_result(str(ans), str(ground_truth)):
                 total_correct += 1
                 output_dict['correct'].append(1)
             else:
