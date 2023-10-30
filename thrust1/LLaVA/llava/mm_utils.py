@@ -40,44 +40,26 @@ def process_images(images, image_processor, model_cfg):
     return new_images
 
 
-def tokenizer_image_token(prompts, tokenizer, image_token_index=IMAGE_TOKEN_INDEX, return_tensors=None):
-    input_ids_final = None
-    for prompt in prompts:
-        prompt_chunks = [tokenizer(chunk).input_ids for chunk in prompt.split('<image>')]
+def tokenizer_image_token(prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX, return_tensors=None):
+    prompt_chunks = [tokenizer(chunk).input_ids for chunk in prompt.split('<image>')]
 
-        def insert_separator(X, sep):
-            return [ele for sublist in zip(X, [sep]*len(X)) for ele in sublist][:-1]
+    def insert_separator(X, sep):
+        return [ele for sublist in zip(X, [sep]*len(X)) for ele in sublist][:-1]
 
-        input_ids = []
-        offset = 0
-        if len(prompt_chunks) > 0 and len(prompt_chunks[0]) > 0 and prompt_chunks[0][0] == tokenizer.bos_token_id:
-            offset = 1
-            input_ids.append(prompt_chunks[0][0])
+    input_ids = []
+    offset = 0
+    if len(prompt_chunks) > 0 and len(prompt_chunks[0]) > 0 and prompt_chunks[0][0] == tokenizer.bos_token_id:
+        offset = 1
+        input_ids.append(prompt_chunks[0][0])
 
-        for x in insert_separator(prompt_chunks, [image_token_index] * (offset + 1)):
-            input_ids.extend(x[offset:])
+    for x in insert_separator(prompt_chunks, [image_token_index] * (offset + 1)):
+        input_ids.extend(x[offset:])
 
-        if return_tensors is not None:
-            if return_tensors == 'pt':
-                if input_ids_final is None:
-                    input_ids_final = torch.tensor(input_ids, dtype=torch.long).unsqueeze(0)
-                    attention_mask = torch.ones(input_ids_final.size())
-                    input_ids_final = torch.nn.functional.pad(input_ids_final, (0, 512 - len(input_ids)), "constant", tokenizer.eos_token_id)
-                    attention_mask = torch.nn.functional.pad(attention_mask, (0, 512 - len(input_ids)), "constant", 0)
-                    
-                    print(input_ids_final.size())
-                else:
-                    temp = torch.tensor(input_ids, dtype=torch.long).unsqueeze(0)
-                    temp_attention_mask = torch.ones(temp.size())
-                    temp = torch.nn.functional.pad(temp, (0, 512 - len(input_ids)), "constant", tokenizer.eos_token_id)
-                    temp_attention_mask = torch.nn.functional.pad(temp_attention_mask, (0, 512 - len(input_ids)), "constant", 0)
-
-
-                    input_ids_final = torch.cat((input_ids_final, temp), 0)
-                    attention_mask = torch.cat((attention_mask, temp_attention_mask), 0)
-                    print(input_ids_final.size())
-
-    return input_ids_final, attention_mask
+    if return_tensors is not None:
+        if return_tensors == 'pt':
+            return torch.tensor(input_ids, dtype=torch.long)
+        raise ValueError(f'Unsupported tensor type: {return_tensors}')
+    return input_ids
 
 
 def get_model_name_from_path(model_path):
@@ -104,5 +86,14 @@ class KeywordsStoppingCriteria(StoppingCriteria):
         self.start_len = input_ids.shape[1]
 
     def __call__(self, output_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs) -> bool:
-
+        # assert output_ids.shape[0] == 1, "Only support batch size 1 (yet)"  # TODO
+        offset = min(output_ids.shape[1] - self.start_len, 3)
+        self.keyword_ids = [keyword_id.to(output_ids.device) for keyword_id in self.keyword_ids]
+        for keyword_id in self.keyword_ids:
+            if output_ids[0, -keyword_id.shape[0]:] == keyword_id:
+                return True
+        outputs = self.tokenizer.batch_decode(output_ids[:, -offset:], skip_special_tokens=True)[0]
+        for keyword in self.keywords:
+            if keyword in outputs:
+                return True
         return False

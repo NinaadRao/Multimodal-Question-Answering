@@ -334,7 +334,7 @@ conv_llava_v0_mmtag = Conversation(
 
 conv_llava_v1 = Conversation(
     system="A chat between a curious human and an artificial intelligence assistant. "
-           "The assistant gives helpful, detailed, and polite answers to the human's questions.",
+           "The assistant gives one word answers to the human's questions.",
     roles=("USER", "ASSISTANT"),
     version="v1",
     messages=(),

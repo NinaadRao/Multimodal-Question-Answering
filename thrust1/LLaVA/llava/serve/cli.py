@@ -15,6 +15,47 @@ from io import BytesIO
 from transformers import TextStreamer
 import json
 import pandas as pd
+import time
+
+def pad_sequence_to_max_length(sequence, max_length, padding_value=0):
+      """Pad a sequence to the desired max length."""
+      if len(sequence) >= max_length:
+          return sequence
+      return torch.cat([torch.full((max_length - len(sequence),), padding_value, dtype=sequence.dtype), sequence])
+
+def format_text(inp, model, conv):
+    # first message
+    if model.config.mm_use_im_start_end:
+        inp = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN + '\n' + inp
+    else:
+        inp = DEFAULT_IMAGE_TOKEN + '\n' + inp
+    conv.append_message(conv.roles[0], inp)
+    # else:
+    #     # later messages
+    #     conv.append_message(conv.roles[0], inp)
+    conv.append_message(conv.roles[1], None)
+    prompt = conv.get_prompt()
+    return prompt
+
+
+
+def get_processed_tokens_batch( batch_text, image_paths, image_processor, tokenizer, model):
+      prompt = [format_text(text, model, conv_templates[args.conv_mode].copy()) for text in batch_text]
+      images = [load_image('/data/user_data/naveensu/CLEVR_v1.0/images/val/' + image_path) for image_path in image_paths]
+
+      batch_input_ids = [
+          tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt") for prompt in prompt
+      ]
+
+      # Determine the maximum length of input_ids in the batch
+      max_len = max([len(seq) for seq in batch_input_ids])
+      # Pad each sequence in input_ids to the max_len
+      padded_input_ids = [pad_sequence_to_max_length(seq.squeeze(), max_len) for seq in batch_input_ids]
+      batch_input_ids = torch.stack(padded_input_ids).cuda()
+
+      batch_image_tensor = image_processor.preprocess(images, return_tensors='pt')['pixel_values'].half().cuda()
+      
+      return batch_image_tensor, batch_input_ids
 
 def load_image(image_file):
     if image_file.startswith('http') or image_file.startswith('https'):
@@ -31,6 +72,7 @@ def main(args):
 
     model_name = get_model_name_from_path(args.model_path)
     tokenizer, model, image_processor, context_len = load_pretrained_model(args.model_path, args.model_base, model_name, args.load_8bit, args.load_4bit)
+    tokenizer.padding_side = "left"
 
     if 'llama-2' in model_name.lower():
         conv_mode = "llava_llama_2"
@@ -59,83 +101,48 @@ def main(args):
     questions_list = json.load(questions_file)['questions']
     questions_file.close()
     file_dump = {'question' : [], 'image_filename' : [], 'ground_truth_ans' : [], 'question_type' : [],'predicted_ans' : [], 'correct': [], 'question_family_index': []}
-    pd.DataFrame(file_dump).to_csv('outputs-eval.csv', index = False)
 
 
 
-    # while True:
-    prompts = []
-    batch_size = 16
-    print(len(questions_list))
-    for i, question in enumerate(questions_list):
-        if (i + 1) % batch_size == 0:
-            
-            input_ids, attention_mask = tokenizer_image_token(prompts, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt')
-            input_ids = input_ids.cuda()
-            # stop_str = conv.sep if conv.sep_style != SeparatorStyle.TWO else conv.sep2
-            # keywords = [stop_str]
-            print(input_ids[:1, ].size())
-            # stopping_criteria = KeywordsStoppingCriteria(keywords, tokenizer, input_ids[:1, ])
-            # streamer = TextStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+    batch_size = 32
+    for i in range(0, len(questions_list), batch_size):
+        print("Batch ", int(i/batch_size) + 1)
+        image_filenames = [j['image_filename'] for j in questions_list[i: i + batch_size]]
+        questions = [j['question'] for j in questions_list[i: i + batch_size]]
 
-            with torch.inference_mode():
-                output_ids = model.generate(
-                    input_ids,
-                    images=image_tensor,
-                    do_sample=True,
-                    temperature=0.2,
-                    max_new_tokens=1024,
-                    # streamer=streamer,
-                    use_cache=True,
-                    # stopping_criteria=[stopping_criteria], 
-                    attention_mask = attention_mask)
-            print(output_ids.size())
-            outputs = tokenizer.batch_decode(output_ids[:, input_ids.shape[1]:])
+        batch_image_tensor, batch_input_ids = get_processed_tokens_batch(questions, image_filenames, image_processor, tokenizer, model)
+
+        stop_str = conv.sep if conv.sep_style != SeparatorStyle.TWO else conv.sep2
+        keywords = [stop_str]
+        stopping_criteria = KeywordsStoppingCriteria(keywords, tokenizer, batch_input_ids)
+
+        with torch.inference_mode():
+            output_ids = model.generate(
+                batch_input_ids,
+                images=batch_image_tensor,
+                do_sample=True,
+                temperature=0.2,
+                max_new_tokens=1024,
+                # streamer=streamer,
+                use_cache=True,
+                stopping_criteria=[stopping_criteria for _ in range(batch_size)])
+
+        outputs = tokenizer.batch_decode(output_ids[:, batch_input_ids.shape[1]:])
+        outputs = [out.strip() for out in outputs]
+        outputs = [output.split(stop_str)[0] for output in outputs]
+        file_dump['question'] += questions
+        file_dump['image_filename'] += image_filenames
+        file_dump['ground_truth_ans'] += [j['answer'] for j in questions_list[i: i + batch_size]]
+        file_dump['question_type'] += [','.join(i['function'] for i in question['program']) for question in questions_list[i: i + batch_size]]
+        file_dump['predicted_ans'] += outputs
+        file_dump['correct'] += [1 for _ in range(batch_size)]
+        file_dump['question_family_index'] += [j['question_family_index'] for j in questions_list[i: i + batch_size]]
+        if (i/batch_size) % 20 == 0:
+            pd.DataFrame(file_dump).to_csv('outputs-eval.csv', index = False)
+        
+        if args.debug:
+            print(questions)
             print(outputs)
-            # file_dump['question'].append(question['question'])
-            # file_dump['image_filename'].append(question['image_filename'])
-            # file_dump['ground_truth_ans'].append(question['answer'])
-            # file_dump['question_type'].append(','.join(i['function'] for i in question['program']))
-            # file_dump['predicted_ans'].append(outputs)
-            # file_dump['correct'].append(1)
-            # file_dump['question_family_index'].append(question['question_family_index'])
-            if args.debug:
-                print("\n", {"prompt": prompt, "outputs": outputs}, "\n")
-
-            prompts = []
-            image_tensor = image_processor.preprocess(image, return_tensors='pt')['pixel_values'].half().cuda()
-            df = pd.read_csv('outputs-eval.csv')
-            pd.concat([df, pd.DataFrame(file_dump)])
-
-            
-        conv = conv_templates[args.conv_mode].copy()
-        
-        im_file = question['image_filename']
-        print(i + 1, im_file)
-
-        inp = question['question']
-        image = load_image(im_path + im_file)
-        if (i + 1) % batch_size:
-            image_tensor = torch.cat((image_tensor, image_processor.preprocess(image, return_tensors='pt')['pixel_values'].half().cuda()), 0)
-
-        print(image_tensor.size())
-        
-        if image is not None:
-            # first message
-            if model.config.mm_use_im_start_end:
-                inp = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN + '\n' + inp
-            else:
-                inp = DEFAULT_IMAGE_TOKEN + '\n' + inp
-            conv.append_message(conv.roles[0], inp)
-            image = None
-        # else:
-        #     # later messages
-        #     conv.append_message(conv.roles[0], inp)
-        conv.append_message(conv.roles[1], None)
-        prompt = conv.get_prompt()
-        prompts.append(prompt)
-        
-        
     pd.DataFrame(file_dump).to_csv('outputs-eval.csv', index = False)
 
 if __name__ == "__main__":
@@ -152,3 +159,4 @@ if __name__ == "__main__":
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
     main(args)
+
