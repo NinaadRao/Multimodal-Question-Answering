@@ -1,20 +1,27 @@
 import torch
-from transformers import IdeficsForVisionText2Text, AutoProcessor, Trainer, TrainingArguments, BitsAndBytesConfig
+from datasets import load_dataset
+from peft import LoraConfig, get_peft_model
 from PIL import Image
-# import boto3
+from transformers import IdeficsForVisionText2Text, AutoProcessor, Trainer, TrainingArguments, BitsAndBytesConfig
+import torchvision.transforms as transforms
+import wandb
+import os
+from peft import PeftModel
 import json
 import pandas as pd
-from peft import PeftModel
 import time
+import logging
 import argparse
-
 parser = argparse.ArgumentParser(
                     prog='eval-idefics',
                     description='script to eval idefics-9b')
 
 parser.add_argument('-m', '--model', default= 'idefics-50') 
 parser.add_argument('-o', '--output', default = 'latest-eval.csv')
+parser.add_argument('-i', '--image', default = 'train_images_small')
+parser.add_argument('-d', '--data', default = 'router_train_small.csv')
 args = parser.parse_args()
+
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -28,30 +35,11 @@ bnb_config = BitsAndBytesConfig(
     bnb_4bit_compute_dtype=torch.float16,
     llm_int8_skip_modules=["lm_head", "embed_tokens"],
 )
-model = IdeficsForVisionText2Text.from_pretrained(checkpoint, quantization_config=bnb_config, device_map="auto")
-model = PeftModel.from_pretrained(model, args.model)
 
 processor = AutoProcessor.from_pretrained(checkpoint)
+model = IdeficsForVisionText2Text.from_pretrained(checkpoint, quantization_config=bnb_config, device_map="auto")
 
-
-### some variables are purposely kept blank
-
-# session = boto3.Session(
-#     aws_access_key_id="",
-#     aws_secret_access_key=""
-# )
-
-# s3 = session.client('s3')
-# bucket_name = ""
-# key = ""
-
-# obj = s3.get_object(Bucket=bucket_name, Key=key)
-# file_content = json.loads(obj['Body'].read().decode('utf-8'))
-file = open("/data/user_data/naveensu/vqa/vqacp_v2_test_annotations.json")
-annot_file_content = json.loads(file.read())
-
-file = open("/data/user_data/naveensu/vqa/vqacp_v2_test_questions.json")
-ques_file_content = json.loads(file.read())
+model = PeftModel.from_pretrained(model, args.model)
 
 
 def generate_output_answer(prompts):
@@ -75,6 +63,7 @@ def evaluate_result(predicted_answer, ground_truth_answer):
                 'eight': '8',
                 'nine': '9'
                }
+    ground_truth_answer = str(ground_truth_answer)
     predicted_answer = predicted_answer.lower()
     splitted = predicted_answer.split()
 
@@ -93,47 +82,33 @@ total_correct = 0
 output_dict = {'question': [], 
                'image_filename': [],
                'ground_truth_ans': [], 
-               'question_type': [],
                'predicted_ans': [], 
                'correct': [],
-               # 'question_family_index': [],
-               'coco_split': []
               }
 
-base_url = "/data/user_data/naveensu/vqa/"
-
+base_url = '/data/user_data/naveensu/' + args.image
+df = pd.read_csv('/data/user_data/naveensu/' + args.data)
 prompts = []
 ground_truth_answers = []
-for (item1, item2) in zip(annot_file_content, ques_file_content):
-    # start = time.time()
+predicted_answers = []
+for i, item in df.iterrows():
+    start = time.time()
     total_questions += 1
-    question = item2['question']
-    img_filename = item2['image_id']
-    coco_split = item2['coco_split']
-    # print(item1)
-    # print(item2)
-    zeroes = '0' * (12 - len(str(img_filename)))
-    image_object_url = base_url + str(coco_split) + '/' + 'COCO_' + coco_split + '_' + zeroes +  str(img_filename) + '.jpg'
-    ground_truth_answer = item1['multiple_choice_answer']
+
+    question = item['question']
+    img_filename = item['image_path']
+    image_object_url = base_url + '/' + img_filename
+    ground_truth_answer = item['answer']
     ground_truth_answers.append(ground_truth_answer)
 
     img = Image.open(image_object_url)
 
-    prompts.append([img, "Question: " + question  + " Please answer in exactly one word. " + "Answer: "])
+    prompts.append([img, "Question: " + question  +  "Answer: "])
 
-    # types = ''
-    # for p in item['program']:
-    #     if p['function'] == 'scene':
-    #         continue
-    #     types = types + p['function'] + ", "
-
+   
     output_dict['question'].append(question)
     output_dict['image_filename'].append(img_filename)
     output_dict['ground_truth_ans'].append(ground_truth_answer)
-    # output_dict['question_family_index'].append(item['question_family_index'])
-    output_dict['question_type'].append(item1['question_type'])
-    output_dict['coco_split'].append(coco_split)
-
 
     if total_questions % 128 == 0:
 
@@ -141,11 +116,7 @@ for (item1, item2) in zip(annot_file_content, ques_file_content):
 
         for ans, ground_truth in zip(predicted_answer, ground_truth_answers):
             # print(ans)
-            
-            ans = ans.split("Answer: ")
-            if len(ans) > 1:
-                ans = ans[1]
-
+            ans = ans.split("Answer: ")[1]
             output_dict['predicted_ans'].append(ans)
 
             if evaluate_result(ans, ground_truth):
@@ -160,13 +131,11 @@ for (item1, item2) in zip(annot_file_content, ques_file_content):
         ground_truth_answers = []
         pd.DataFrame(output_dict).to_csv(args.output, index = False)
 
-    # print(time.time() - start)
+    print(time.time() - start)
 
 for ans, ground_truth in zip(predicted_answer, ground_truth_answers):
     # print(ans)
-    ans = ans.split("Answer: ")
-    if len(ans) > 1:
-        ans = ans[1]
+    ans = ans.split("Answer: ")[1]
     output_dict['predicted_ans'].append(ans)
     # print(ans)
 
@@ -180,46 +149,3 @@ print(f"Completed {total_questions}")
 
 df = pd.DataFrame(output_dict)
 df.to_csv(args.output, index = False)
-#     if total_questions % 128 == 0:
-
-#         predicted_answer = generate_output_answer(prompts)
-
-#         for ans, ground_truth in zip(predicted_answer, ground_truth_answers):
-#             # print(ans)
-#             output_dict['predicted_ans'].append(ans)
-
-#             if evaluate_result(ans, ground_truth):
-#                 total_correct += 1
-#                 output_dict['correct'].append(1)
-#             else:
-#                 output_dict['correct'].append(0)
-
-#         print(f"Completed {total_questions}")
-
-#         prompts = []
-
-#         df = pd.DataFrame(output_dict)
-#         df.to_csv("output.csv")
-
-# predicted_answer = generate_output_answer(prompts)
-
-# for ans, ground_truth in zip(predicted_answer, ground_truth_answers):
-#     # print(ans)
-#     ans = ans.split("Assistant: ")[1]
-#     output_dict['predicted_ans'].append(ans)
-#     # print(ans)
-
-#     if evaluate_result(ans, ground_truth):
-#         total_correct += 1
-#         output_dict['correct'].append(1)
-#     else:
-#         output_dict['correct'].append(0)
-
-# print(f"Completed {total_questions}")
-
-# # prompts = []
-
-# df = pd.DataFrame(output_dict)
-# df.to_csv("output.csv")
-
-

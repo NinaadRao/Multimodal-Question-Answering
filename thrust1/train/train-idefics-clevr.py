@@ -1,15 +1,28 @@
 import torch
-from datasets import load_dataset
+from datasets import load_dataset, concatenate_datasets, Dataset
 from peft import LoraConfig, get_peft_model
 from PIL import Image
 from transformers import IdeficsForVisionText2Text, AutoProcessor, Trainer, TrainingArguments, BitsAndBytesConfig
 import torchvision.transforms as transforms
 import wandb
 import os
+import argparse
+parser = argparse.ArgumentParser(
+                    prog='train-idefics',
+                    description='script to train idefics-9b')
+
+parser.add_argument('-w', '--wandb', default= 'idefics-9b') 
+parser.add_argument('-r', '--ratio', type=float, default = 0.5)
+parser.add_argument('-d', '--dir', default = 'idefics-latest')
+parser.add_argument('-m', '--model', default = 'idefics-90')
+args = parser.parse_args()
+
 os.environ["WANDB_PROJECT"]="MQA"
 os.environ["WANDB_LOG_MODEL"] = "checkpoint"
 wandb.login(key = "6303eb738fdf6199f76497134963d53a7f8cd9be")
 device = "cuda" if torch.cuda.is_available() else "cpu"
+
+
 
 # checkpoint = "HuggingFaceM4/tiny-random-idefics"
 checkpoint = "HuggingFaceM4/idefics-9b"
@@ -53,8 +66,8 @@ def ds_transforms(example_batch):
         # We split the captions to avoid having very long examples, which would require more GPU ram during training
         prompts.append(
             [
-                Image.open('/data/user_data/naveensu/CLEVR_v1.0/images/train/' + example_batch['image_filename'][i]),
-                "Question: {} Answer: {}.</s>".format(example_batch['question'][i], example_batch['answer'][i]),
+                Image.open(example_batch['image_path'][i]),
+                "Question: {} Answer: {}</s>".format(example_batch['question'][i], example_batch['answer'][i]),
             ],
         )
     inputs = processor(prompts, transform=image_transform, return_tensors="pt").to(device)
@@ -63,10 +76,15 @@ def ds_transforms(example_batch):
 
 
 # load and prepare dataset
-ds = load_dataset('json', data_files = '/data/user_data/naveensu/CLEVR_v1.0/questions/CLEVR_train_questions-new.json')
-ds = ds["train"].train_test_split(test_size=0.002)
-train_ds = ds["train"]
-eval_ds = ds["test"]
+ds1 = load_dataset('json', data_files = '/data/user_data/naveensu/CLEVR_v1_processed.json')
+ds2 = load_dataset('json', data_files = '/data/user_data/naveensu/vqa/vqacp_v2_train_processed.json')
+vqa_size = len(ds2['train'])
+clevr_size = len(ds1['train'])
+training_size = 699989
+ds1 = ds1['train'].train_test_split(test_size = clevr_size - int(args.ratio * training_size), seed = 69)
+ds2 = ds2['train'].train_test_split(test_size = vqa_size - int((1 - args.ratio) * training_size), seed = 69)
+train_ds = concatenate_datasets([ds1['train'], ds2['train']])
+eval_ds = Dataset.from_dict(concatenate_datasets([ds1['test'], ds2['test']]).shuffle(seed = 69)[0:1000])
 train_ds.set_transform(ds_transforms)
 eval_ds.set_transform(ds_transforms)
 
@@ -83,7 +101,7 @@ model = get_peft_model(model, config)
 
 
 training_args = TrainingArguments(
-    output_dir=f"{model_name}-clevr",
+    output_dir=args.dir,
     learning_rate=2e-4,
     fp16=True,
     per_device_train_batch_size=16,
@@ -95,7 +113,7 @@ training_args = TrainingArguments(
     save_strategy="steps",
     save_steps=1000,
     eval_steps=100,
-    logging_steps=100,
+    logging_steps=15,
     num_train_epochs=1,
     remove_unused_columns=False,
     push_to_hub=False,
@@ -103,7 +121,7 @@ training_args = TrainingArguments(
     load_best_model_at_end=True,
     optim="paged_adamw_8bit",
     report_to="wandb",
-    run_name="clevr_100-run_1"
+    run_name=args.wandb
 )
 
 trainer = Trainer(
@@ -112,5 +130,5 @@ trainer = Trainer(
     train_dataset=train_ds,
     eval_dataset=eval_ds,
 )
-trainer.train()
-#trainer.train(resume_from_checkpoint = True)
+# trainer.train()
+trainer.train(resume_from_checkpoint = '/data/user_data/naveensu/' + args.model)
