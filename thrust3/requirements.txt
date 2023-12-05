@@ -1,0 +1,9 @@
+git+https://github.com/huggingface/transformers.git@0a55d9f7376f72ad3ff296d4249840021b03bcc4
+git+https://github.com/huggingface/peft.git
+datasets
+bitsandbytes
+sentencepiece
+accelerate
+loralib
+Pillow
+qdrant-client
